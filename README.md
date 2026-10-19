@@ -2,6 +2,12 @@
 
 **Paper trading only. No brokerage connections, no real-money orders.**
 
+## October 19 user-directed 14:00 ET stop
+
+The user requested *actual forward paper trading through 14:00 ET, not historical fast-forwarding*. The request was received **after 14:00**, so missing intraday intervals were **not** reconstructed. The engine enforces a one-day hard stop at 14:00 ET on 2026-10-19 while retaining ordinary market hours on later trading days.
+
+**Verified report:** [2026-10-19 through 14:00 forward-run audit](reports/2026-10-19_through_1400_ET.md) — partial coverage, zero recorded fills, no fabricated post-hoc valuations.
+
 Automated US equities volatility / momentum experiment:
 - **Starts:** Monday, 2026-10-19
 - **Market:** NYSE regular session only (America/New_York, 09:30–16:00 on actual exchange trading days)
