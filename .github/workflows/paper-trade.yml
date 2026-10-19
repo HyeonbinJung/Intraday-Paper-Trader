@@ -1,0 +1,54 @@
+name: US intraday paper trader
+
+on:
+  schedule:
+    # America/New_York handles EST/EDT; Monday-Friday regular session only.
+    - cron: '30,40,50 9 * * 1-5'
+      timezone: 'America/New_York'
+    - cron: '*/10 10-15 * * 1-5'
+      timezone: 'America/New_York'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: us-paper-trader-main
+  cancel-in-progress: false
+
+jobs:
+  paper-trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify risk rules and accounting
+        run: python -m unittest discover -s tests -v
+
+      - name: Evaluate paper portfolio (US market time gate in Python)
+        run: python trader.py
+
+      - name: Append and commit this batch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A data/
+          if git diff --cached --quiet; then
+            echo "No new portfolio snapshots."
+          else
+            git commit -m "paper-trade: record market batch"
+            git push origin HEAD:main
+          fi
