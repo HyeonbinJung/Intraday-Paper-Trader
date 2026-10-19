@@ -34,10 +34,12 @@ class CoreTests(unittest.TestCase):
         tx = {"symbol": "ABC", "reason": "STOP", "realized_pnl": -200}
         learn_from_loss(state, rules, tx, now)
         original = rules["risk_per_trade"]
+        self.assertEqual(rules["version"], 2)
+        self.assertLess(original, 0.007)
         learn_from_loss(state, rules, tx, now)
         self.assertLess(rules["risk_per_trade"], original)
         self.assertGreater(rules["rvol_min"], 1.30)
-        self.assertEqual(rules["version"], 2)
+        self.assertEqual(rules["version"], 3)
         self.assertIn("hypothesis_not_proven_cause", rules["lessons"][0])
 
     def test_holiday(self):
