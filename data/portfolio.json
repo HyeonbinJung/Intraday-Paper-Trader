@@ -1,0 +1,14 @@
+{
+  "initial_capital": 100000,
+  "cash": 100000,
+  "positions": {},
+  "realized_pnl": 0,
+  "session": "",
+  "session_start_equity": 100000,
+  "losses_today": 0,
+  "consecutive_losses": 0,
+  "cooldowns": {},
+  "last_prices": {},
+  "last_bar_by_symbol": {},
+  "last_run": null
+}
