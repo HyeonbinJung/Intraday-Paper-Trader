@@ -19,7 +19,7 @@ import yfinance as yf
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 NY = ZoneInfo("America/New_York")
-START_DATE = date(2026, 10, 20)
+START_DATE = date(2026, 10, 19)
 SEED = 100_000.0
 FEE_RATE = 0.0005  # Assumed 5 bps per fill (paper cost).
 SLIPPAGE = 0.0010  # Assumed 10 bps adverse slippage per fill.
