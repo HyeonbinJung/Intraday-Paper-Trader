@@ -2,10 +2,10 @@ name: US intraday paper trader
 
 on:
   schedule:
-    # America/New_York handles EST/EDT; Monday-Friday regular session only.
-    - cron: '30,40,50 9 * * 1-5'
+    # America/New_York handles EST/EDT; Mon-Fri, off the crowded :00 marks.
+    - cron: '31,41,51 9 * * 1-5'
       timezone: 'America/New_York'
-    - cron: '*/10 10-15 * * 1-5'
+    - cron: '1,11,21,31,41,51 10-15 * * 1-5'
       timezone: 'America/New_York'
   workflow_dispatch:
 
