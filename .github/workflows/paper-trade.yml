@@ -50,5 +50,6 @@ jobs:
             echo "No new portfolio snapshots."
           else
             git commit -m "paper-trade: record market batch"
+            git pull --rebase origin main
             git push origin HEAD:main
           fi
