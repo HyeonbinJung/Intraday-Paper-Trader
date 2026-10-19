@@ -20,6 +20,10 @@ ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 NY = ZoneInfo("America/New_York")
 START_DATE = date(2026, 10, 19)
+# User-directed hard stop for 2026-10-19 at 14:00 ET. No post-14:00
+# synthetic replay or catch-up evaluation is ever permitted.
+TODAY_ONLY_STOP_DATE = date(2026, 10, 19)
+TODAY_ONLY_STOP_HOUR = 14
 SEED = 100_000.0
 FEE_RATE = 0.0005  # Assumed 5 bps per fill (paper cost).
 SLIPPAGE = 0.0010  # Assumed 10 bps adverse slippage per fill.
@@ -66,6 +70,19 @@ def session_bounds(now: datetime):
         return None
     entry = schedule.iloc[0]
     return entry["market_open"].tz_convert(NY).to_pydatetime(), entry["market_close"].tz_convert(NY).to_pydatetime()
+
+def effective_session_bounds(now: datetime):
+    """NYSE bounds, truncated at 14:00 ET on 2026-10-19 only."""
+    bounds = session_bounds(now)
+    if bounds is None:
+        return None
+    opening, closing = bounds
+    if now.date() == TODAY_ONLY_STOP_DATE:
+        requested_close = datetime(now.year, now.month, now.day,
+                                   TODAY_ONLY_STOP_HOUR, 0, tzinfo=NY)
+        closing = min(closing, requested_close)
+    return opening, closing
+
 
 def equity(state: dict) -> float:
     return float(state["cash"]) + sum(
@@ -323,7 +340,7 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
     apply_2025_risk_defaults(state, rules)
     bucket = now.strftime("%Y-%m-%d/%H%M")
     record_path = DATA / "runs" / (bucket + ".json")
-    bounds = session_bounds(now)
+    bounds = effective_session_bounds(now)
     transactions = []
     candidates = []
     ranked = []
@@ -337,7 +354,10 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
     elif bounds is None:
         note = "NYSE closed: holiday or weekend."
     elif not is_open:
-        note = "Outside NYSE regular session."
+        note = ("Outside requested 2026-10-19 14:00 ET cutoff."
+                if now.date() == TODAY_ONLY_STOP_DATE and
+                   now.hour >= TODAY_ONLY_STOP_HOUR
+                else "Outside NYSE regular session.")
     else:
         opening, closing = bounds
         cutoff = closing - timedelta(minutes=10)
@@ -583,11 +603,19 @@ Full run: \`{record_path.relative_to(ROOT)}\`.
 def batch_main():
     """Evaluate every ~60s inside one ~10m scheduled job; push just one 10m batch."""
     start = datetime.now(NY)
+    # The deadline is hard: do not invent or backfill intraday decisions
+    # after 14:00 ET. Future ordinary exchange days remain unchanged.
+    bounds = effective_session_bounds(start)
+    if bounds is not None and start >= bounds[1] and start.date() == TODAY_ONLY_STOP_DATE:
+        print("USER_CUTOFF_REACHED: paper trading stopped at 2026-10-19 14:00 ET; no backfill")
+        return
     DATA.mkdir(exist_ok=True)
     bucket_start = start.replace(minute=(start.minute // 10) * 10, second=0, microsecond=0)
     next_bucket = bucket_start + timedelta(minutes=10)
     # Don't exceed run slot: leave 55 seconds to save/commit. Max 8 evaluations.
     deadline = min(next_bucket - timedelta(seconds=55), start + timedelta(minutes=8))
+    if bounds is not None:
+        deadline = min(deadline, bounds[1])
     state = read_json(DATA / "portfolio.json", initial_state())
     rules = read_json(DATA / "rules.json", initial_rules())
     archive_path = DATA / "runs" / bucket_start.strftime("%Y-%m-%d/%H%M.json")
