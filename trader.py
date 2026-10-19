@@ -150,35 +150,42 @@ def append_line(path: Path, obj: dict) -> None:
         out.write(json.dumps(obj, ensure_ascii=False, default=str) + "\n")
 
 def learn_from_loss(state: dict, rules: dict, tx: dict, now: datetime):
-    """Log a plausible diagnosis, not a causal certainty; persist modifications."""
+    """Every realized loss updates in-memory rules immediately, applied on next minute."""
     state["losses_today"] += 1
     state["consecutive_losses"] += 1
-    state["cooldowns"][tx["symbol"]] = (now + timedelta(minutes=rules["cooldown_minutes"])).isoformat()
-    reason = tx["reason"]
+    state["cooldowns"][tx["symbol"]] = (now + timedelta(
+        minutes=rules["cooldown_minutes"])).isoformat()
     hypothesis = {
-        "STOP": "Recent downside momentum overwhelmed the ATR-based stop",
-        "TREND_BREAK": "The short-term moving-average trend failed",
-        "SESSION_EXIT": "The setup did not resolve before the session ended",
-        "PREVIOUS_SESSION": "A delayed exit/overnight gap may have increased risk",
-        "TAKE_PROFIT": "Costs/slippage exceeded the small gross gain"
-    }.get(reason, "The entry thesis did not generate enough net return after costs")
+        "STOP": "ATR stop crossed: volatility/trend reversal",
+        "TREND_BREAK": "Moving-average trend failed",
+        "SESSION_EXIT": "Entry failed to reach target before cutoff",
+        "PREVIOUS_SESSION": "Delayed close may have exposed an overnight gap",
+        "TAKE_PROFIT": "Round-trip costs overcame the raw profit",
+    }.get(tx["reason"], "Net of costs, signal did not outperform")
     changes = []
-    if state["consecutive_losses"] >= 2:
-        previous = rules["risk_per_trade"]
-        rules["risk_per_trade"] = round(max(0.0025, previous * 0.8), 5)
-        if rules["risk_per_trade"] < previous:
-            changes.append(f"risk_per_trade {previous:.5f} -> {rules['risk_per_trade']:.5f}")
-        previous_rvol = rules["rvol_min"]
-        rules["rvol_min"] = round(min(2.5, previous_rvol + 0.1), 2)
-        if rules["rvol_min"] > previous_rvol:
-            changes.append(f"rvol_min {previous_rvol:.2f} -> {rules['rvol_min']:.2f}")
-        rules["cooldown_minutes"] = min(90, rules["cooldown_minutes"] + 10)
-        changes.append(f"cooldown_minutes -> {rules['cooldown_minutes']}")
-        rules["version"] += 1
-    rules["lessons"].append({"time_et": now.isoformat(), "symbol": tx["symbol"],
-        "net_pnl": tx["realized_pnl"], "exit_reason": reason,
-        "hypothesis_not_proven_cause": hypothesis, "rules_changed": changes,
-        "applies_from_next_batch": True})
+    previous = rules["risk_per_trade"]
+    scale = 0.8 if state["consecutive_losses"] >= 2 else 0.93
+    rules["risk_per_trade"] = round(max(0.0025, previous * scale), 5)
+    if previous != rules["risk_per_trade"]:
+        changes.append(f"risk_per_trade {previous:.5f} -> {rules['risk_per_trade']:.5f}")
+    prev_rvol = rules["rvol_min"]
+    rules["rvol_min"] = round(min(2.5, prev_rvol + (
+        0.10 if state["consecutive_losses"] >= 2 else 0.05)), 2)
+    if rules["rvol_min"] != prev_rvol:
+        changes.append(f"rvol_min {prev_rvol:.2f} -> {rules['rvol_min']:.2f}")
+    prev_cooldown = rules["cooldown_minutes"]
+    rules["cooldown_minutes"] = min(90, prev_cooldown + 5)
+    if rules["cooldown_minutes"] != prev_cooldown:
+        changes.append(f"cooldown_minutes {prev_cooldown} -> {rules['cooldown_minutes']}")
+    rules["version"] += 1
+    rules["lessons"].append({
+        "time_et": now.isoformat(), "symbol": tx["symbol"],
+        "net_pnl": tx["realized_pnl"], "exit_reason": tx["reason"],
+        "hypothesis_not_proven_cause": hypothesis,
+        "rules_changed_immediately": changes, "applies_from_next_minute": True,
+        "github_archive": "next 10-minute commit",
+        "rules_version": rules["version"],
+    })
     rules["lessons"] = rules["lessons"][-300:]
 
 def execute(state: dict, rules: dict, now: datetime, sym: str, side: str, qty: int,
@@ -361,7 +368,7 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
     portfolio = {"cash": money(state["cash"]), "equity": money(total),
         "market_value": money(total - state["cash"]),
         "total_return_pct": round(100 * (total / SEED - 1), 3),
-        "realized_pnl": money(state["realized_pnl"]), "positions": state["positions"]}
+        "realized_pnl": money(state["realized_pnl"]), "positions": json.loads(json.dumps(state["positions"]))}
     record = {"timestamp_et": now.isoformat(), "status": status, "note": note,
         "data_source": "Yahoo Finance via yfinance (possibly delayed/unofficial)",
         "data_quality": f"1m completed bars; max age {MAX_BAR_AGE_MIN}min; paper fills at bar close plus costs",
@@ -422,7 +429,7 @@ def persist_record(record: dict, state: dict, rules: dict, now: datetime) -> Non
 Full run: \`{record_path.relative_to(ROOT)}\`.
 """
     (DATA / "LATEST.md").write_text(latest, encoding="utf-8")
-    print(json.dumps({"status": status, "batch": bucket, "orders": len(transactions),
+    print(json.dumps({"status": status, "batch": now.strftime("%Y-%m-%d/%H%M"), "orders": len(transactions),
                       "equity": portfolio["equity"], "errors": errors[:3]}, ensure_ascii=False))
 
 def batch_main():
@@ -446,6 +453,8 @@ def batch_main():
         now = datetime.now(NY)
         if i > 0 and now > deadline:
             break
+        previous_version = rules["version"]
+        previous_lessons = len(rules["lessons"])
         rec, state, rules = run_once(now, state_override=state,
                                     rules_override=rules, discovery_seed=discovery_seed)
         if discovery_seed is None and rec["discovery"]:
@@ -455,6 +464,14 @@ def batch_main():
                             "indicators": rec["indicators"],
                             "transactions": rec["transactions"],
                             "portfolio": rec["portfolio"],
+                            "rules_version_before": previous_version,
+                            "rules_version_after": rules["version"],
+                            "risk_rules_applied": {
+                                "risk_per_trade": rules["risk_per_trade"],
+                                "rvol_min": rules["rvol_min"],
+                                "cooldown_minutes": rules["cooldown_minutes"]
+                            },
+                            "new_loss_reviews": rules["lessons"][previous_lessons:],
                             "errors": rec["errors"]})
         # One-minute decisions, including exit checks and reallocation.
         if rec["status"] == "SKIPPED":
@@ -470,6 +487,8 @@ def batch_main():
     rec["minute_evaluations"] = minute_logs
     rec["evaluation_interval_seconds_target"] = 60
     rec["archive_interval_minutes"] = 10
+    rec["rules_version"] = rules["version"]
+    rec["rule_updates_during_batch"] = [lesson for event in minute_logs for lesson in event["new_loss_reviews"]]
     rec["expected_batch_start_et"] = bucket_start.isoformat()
     if all_transactions:
         rec["status"] = "EXECUTED"
