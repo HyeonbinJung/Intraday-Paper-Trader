@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "risk_per_trade": 0.007,
   "max_position_pct": 0.2,
   "max_gross_exposure": 0.55,
@@ -10,6 +10,18 @@
   "stop_atr": 1.5,
   "target_atr": 2.7,
   "cooldown_minutes": 30,
-  "min_price": 2,
-  "lessons": []
+  "min_price": 5,
+  "lessons": [],
+  "min_holding_minutes": 10,
+  "min_reentry_minutes": 30,
+  "max_entries_per_day": 4,
+  "max_fills_per_day": 10,
+  "max_daily_turnover": 1.25,
+  "max_daily_cost_pct": 0.004,
+  "cost_coverage_multiple": 3,
+  "min_target_pct": 0.009,
+  "max_participation": 0.01,
+  "market_regime_filter": true,
+  "min_entry_minutes_before_close": 45,
+  "configuration_note": "2026-10-19: 2025H1 postmortem limits; configuration baseline, not trade-generated loss."
 }
