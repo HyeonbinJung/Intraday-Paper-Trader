@@ -3,7 +3,7 @@
 **Paper trading only. No brokerage connections, no real-money orders.**
 
 Automated US equities volatility / momentum experiment:
-- **Starts:** Tuesday, 2026-10-20
+- **Starts:** Monday, 2026-10-19
 - **Market:** NYSE regular session only (America/New_York, 09:30–16:00 on actual exchange trading days)
 - **Evaluation cadence:** Every approximately **1 minute inside each GitHub Actions job**, using Yahoo Finance 1-minute historical OHLCV candles (latest *completed* bar only)
 - **GitHub commits:** Every approximately **10 minutes** — including all 1-minute evaluations, each simulated fill, a portfolio snapshot, and any rule changes made within the interval
@@ -71,4 +71,4 @@ python -m unittest discover -s tests -v
 python trader.py
 \`\`\`
 
-The script will skip live trades before October 20, 2026 and outside NYSE regular session.
+The script will skip live trades before October 19, 2026 and outside NYSE regular session.
