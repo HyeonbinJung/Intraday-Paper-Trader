@@ -475,6 +475,15 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
                     state["positions"][s]["stop"] = r["price"] - rules["stop_atr"] * r["atr14"]
                     state["positions"][s]["entry_atr"] = r["atr14"]
                     r["entry_checks"]["executed"] = True
+            # Persist rejected signal reasons, not just executed orders.
+            decisions_by_sym = {r["symbol"]: r for r in top_five}
+            candidates = [dict(x, entry_checks=decisions_by_sym.get(
+                x["symbol"], {}).get("entry_checks", {}),
+                target_move_pct_proxy_not_forecast=decisions_by_sym.get(
+                    x["symbol"], {}).get("target_move_pct_proxy_not_forecast"),
+                projected_roundtrip_cost_pct=decisions_by_sym.get(
+                    x["symbol"], {}).get("projected_roundtrip_cost_pct"))
+                for x in candidates]
             for r in observed.values():
                 state["last_bar_by_symbol"][r["symbol"]] = r["bar_end"]
             status = "EXECUTED" if transactions else "NO_TRADE"
@@ -501,6 +510,11 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
         "session_bounds_et": [x.isoformat() for x in bounds] if bounds else None,
         "discovery": ranked, "indicators": candidates, "transactions": transactions,
         "portfolio": portfolio, "rules_version": rules["version"], "errors": errors,
+        "rejected_entry_reasons": [
+            {"symbol": c["symbol"], "failed_checks": [
+                name for name, passed in c.get("entry_checks", {}).items() if not passed]}
+            for c in candidates if c.get("top_five") and c.get("entry_checks") and
+            not c["entry_checks"].get("executed", False)],
         "turnover_risk": {
             "daily_entries": state["daily_entries"],
             "daily_fills": state["daily_fills"],
