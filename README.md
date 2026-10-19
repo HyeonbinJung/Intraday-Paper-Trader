@@ -12,6 +12,21 @@ Automated US equities volatility / momentum experiment:
 - **Technical metrics:** MA9, MA20, VWAP, RSI14, ATR14, 20-bar relative volume; day percent change and screen liquidity
 - **Screening:** Yahoo Finance public screens (day gainers, day losers and most active), then top five by a composite of movement, ATR%, relative volume and discovery score
 
+## 2025 H1 postmortem and protective constraints
+
+The earlier [2025 minute-by-minute walk-forward backtest](https://github.com/HyeonbinJung/2025-Intraday-Walkforward-Backtest/blob/main/results/2025H1/summary.json) completed 122 sessions, starting at $100,000 and ending at **$40,809.57 (−59.19%)**, with **31,241 fills** and **$48,052.35 in estimated costs**. This is a cautionary sample, not evidence that any new rule will create a profitable strategy.
+
+Key failures and direct corrections:
+- **Minute decision ≠ minute trade**: 1m evaluations continue, but maximum **4 entries/day** and at most **10 fills/day** (risk exits always allowed), plus total daily turnover limit **125% of start-of-day equity**.
+- **Transaction cost ate the signal**: each new entry's ATR-derived target *proxy* must exceed **3× modeled round-trip costs**, and at least **0.9% of entry notional**. This is an affordability hurdle, **not** a statistically validated expected-return forecast.
+- **Premature churn**: min **10 minutes holding** for discretionary trend/target exits; stops and session liquidation override minimum holding; **30-minute** no-reentry period after any exit (longer after losing exits).
+- **Liquidity and market impact**: no buy larger than **1% of previous completed 1-minute bar's volume**; cumulative estimated daily fees/slippage limited to **0.4% of day-opening equity for new entries**. Forced exits can exceed cost/turnover caps.
+- **Market-regime blindness**: use completed 1m SPY prices with rising MA9/MA20 and VWAP confirmation before NEW buys; no SPY data means no new entries, but exits remain possible.
+- **Too little reaction to net-negative cost losses**: label \`COST_DRAG\` if gross mark-to-mark is nonnegative but net P&L is negative; on that very minute, tighten the cost-coverage multiplier for subsequent entries.
+- **Single period was not an out-of-sample proof**: retain detailed candidate rejections, cost budgets, and per-minute risk versions so future forward testing can compare baseline vs cost-controlled settings. Do not optimize rules on future bars.
+
+See [2025_POSTMORTEM.md](2025_POSTMORTEM.md) for numbers, assumptions, ongoing checks, and residual risks.
+
 ## Adaptive rules
 
 In each 1-minute evaluation, exits are assessed first. After **every realized losing exit**, the engine immediately:
@@ -36,6 +51,16 @@ All lesson records, risk-rule changes and each minute's decision trace are expor
 | Cooldown after losing close | 30 min |
 | Minimum relative volume | 1.30× |
 | Entry | Price > MA9 > MA20 and > VWAP, RSI 52–78 |
+| Maximum new entries per day | 4 |
+| Maximum total fills per day | 10 (never blocks risk exits) |
+| Maximum daily traded notional | 125% of day-opening equity for new entries |
+| Max permitted daily estimated costs | 0.4% of day-opening equity for new entries |
+| Cost-to-target hurdle | ATR-based target ≥ 3× modeled round-trip costs and ≥ 0.9% |
+| Minimum discretionary holding time | 10 minutes; stops/day close can exit immediately |
+| Reentry after any exit | 30 minutes minimum |
+| Prior minute volume participation | ≤1% |
+| Broad-market entry filter | SPY MA9 ≥ MA20 and price ≥ MA20 and VWAP |
+| Last permitted new entry | 45 minutes before regular market close |
 
 The engine attempts to close positions during the last 10 minutes of the trading day. Market-data or scheduler outages can prevent that attempt: paper positions can persist and be flagged/closed on the next available valid bar. No order is simulated from a stale/missing bar.
 
