@@ -1,7 +1,8 @@
 import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from trader import START_DATE, initial_state, initial_rules, equity, learn_from_loss, execute, session_bounds
+from trader import (START_DATE, initial_state, initial_rules, equity, learn_from_loss,
+                    execute, session_bounds, apply_2025_risk_defaults, entry_guards)
 
 NY = ZoneInfo("America/New_York")
 
@@ -44,6 +45,56 @@ class CoreTests(unittest.TestCase):
         self.assertGreater(rules["rvol_min"], 1.30)
         self.assertEqual(rules["version"], 3)
         self.assertIn("hypothesis_not_proven_cause", rules["lessons"][0])
+
+    def test_portfolio_carries_2025_limits(self):
+        state, rules = initial_state(), initial_rules()
+        self.assertEqual(rules["max_entries_per_day"], 4)
+        self.assertEqual(rules["min_holding_minutes"], 10)
+        self.assertEqual(rules["cost_coverage_multiple"], 3)
+        state["daily_entries"] = 4
+        row = {"symbol": "ABC", "price": 100, "atr14": 2,
+               "prior_minute_volume": 100_000}
+        checks = entry_guards(state, rules, datetime(2026,10,19,10,0,tzinfo=NY),
+                              row, True, 100)
+        self.assertFalse(checks["daily_entry_limit"])
+        self.assertTrue(checks["payoff_covers_costs"])
+        self.assertTrue(checks["volume_participation"])
+
+    def test_fee_dominated_loss_tightens_hurdle(self):
+        state, rules = initial_state(), initial_rules()
+        now = datetime(2026, 10, 19, 11, tzinfo=NY)
+        log = []
+        execute(state, rules, now, "ABC", "BUY", 100, 100, "TEST", now.isoformat(), log)
+        execute(state, rules, now, "ABC", "SELL", 100, 100.10, "TREND_BREAK",
+                now.isoformat(), log)
+        self.assertEqual(log[-1]["loss_category"], "COST_DRAG")
+        self.assertGreater(rules["cost_coverage_multiple"], 3)
+        self.assertEqual(rules["lessons"][-1]["loss_category"], "COST_DRAG")
+        self.assertGreater(state["daily_trading_cost"], 0)
+        self.assertEqual(state["daily_entries"], 1)
+
+    def test_regime_and_cost_gate(self):
+        state, rules = initial_state(), initial_rules()
+        now = datetime(2026, 10, 19, 11, tzinfo=NY)
+        row = {"symbol": "XYZ", "price": 100, "atr14": 0.10,
+               "prior_minute_volume": 100_000}
+        checks = entry_guards(state, rules, now, row, False, 100)
+        self.assertFalse(checks["market_regime"])
+        self.assertFalse(checks["payoff_covers_costs"])
+        row["atr14"] = 2
+        checks = entry_guards(state, rules, now, row, True, 100)
+        self.assertTrue(checks["payoff_covers_costs"])
+        state["daily_turnover_notional"] = 124_999
+        checks = entry_guards(state, rules, now, row, True, 100)
+        self.assertFalse(checks["daily_turnover_limit"])
+
+    def test_migrate_old_state_without_loss(self):
+        state, rules = initial_state(), initial_rules()
+        state.pop("daily_fills")
+        rules.pop("min_entry_minutes_before_close")
+        apply_2025_risk_defaults(state, rules)
+        self.assertEqual(state["daily_fills"], 0)
+        self.assertEqual(rules["min_entry_minutes_before_close"], 45)
 
     def test_holiday(self):
         self.assertIsNone(session_bounds(datetime(2026, 12, 25, 12, tzinfo=NY)))
