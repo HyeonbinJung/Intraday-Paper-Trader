@@ -7,6 +7,7 @@ import math
 import os
 import re
 import traceback
+import time
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,7 +23,7 @@ START_DATE = date(2026, 10, 20)
 SEED = 100_000.0
 FEE_RATE = 0.0005  # Assumed 5 bps per fill (paper cost).
 SLIPPAGE = 0.0010  # Assumed 10 bps adverse slippage per fill.
-MAX_BAR_AGE_MIN = 25  # Stale data => do NOT simulate a fill.
+MAX_BAR_AGE_MIN = 3  # Stale data => do NOT simulate a fill.
 CAL = mcal.get_calendar("NYSE")
 
 def read_json(path: Path, default: dict) -> dict:
@@ -95,12 +96,12 @@ def discover() -> tuple[list, list]:
 
 def indicators(sym: str, now: datetime, pct: float = 0.0):
     """Evaluate only already-completed 5-minute bars; never fabricate market data."""
-    df = yf.Ticker(sym).history(period="5d", interval="5m", prepost=False, auto_adjust=False)
+    df = yf.Ticker(sym).history(period="2d", interval="1m", prepost=False, auto_adjust=False)
     if df is None or len(df) < 25 or getattr(df.index, "tz", None) is None:
         return None
     df = df.sort_index().copy()
     df.index = df.index.tz_convert(NY)
-    df = df[(df.index + pd.Timedelta(minutes=5)) <= pd.Timestamp(now)]
+    df = df[(df.index + pd.Timedelta(minutes=1)) <= pd.Timestamp(now)]
     if len(df) < 25:
         return None
     # Remove bars with invalid prices or zero volume.
@@ -111,7 +112,7 @@ def indicators(sym: str, now: datetime, pct: float = 0.0):
     if len(df) < 25:
         return None
     last = df.iloc[-1]
-    bar_end = df.index[-1].to_pydatetime() + timedelta(minutes=5)
+    bar_end = df.index[-1].to_pydatetime() + timedelta(minutes=1)
     age = (now - bar_end).total_seconds() / 60
     if age < 0 or age > MAX_BAR_AGE_MIN:
         return None
@@ -219,18 +220,14 @@ def execute(state: dict, rules: dict, now: datetime, sym: str, side: str, qty: i
             state["consecutive_losses"] = 0
     transactions.append(tx)
 
-def run_once(now: datetime):
+def run_once(now: datetime, state_override=None, rules_override=None, discovery_seed=None):
     DATA.mkdir(exist_ok=True)
     state_path = DATA / "portfolio.json"
     rules_path = DATA / "rules.json"
-    state = read_json(state_path, initial_state())
-    rules = read_json(rules_path, initial_rules())
+    state = state_override if state_override is not None else read_json(state_path, initial_state())
+    rules = rules_override if rules_override is not None else read_json(rules_path, initial_rules())
     bucket = now.strftime("%Y-%m-%d/%H%M")
     record_path = DATA / "runs" / (bucket + ".json")
-    # Each scheduled ten-minute slot may have at most one committed outcome.
-    if record_path.exists():
-        print("Slot previously processed:", record_path)
-        return
     bounds = session_bounds(now)
     transactions = []
     candidates = []
@@ -255,7 +252,11 @@ def run_once(now: datetime):
             state["losses_today"] = 0
             state["consecutive_losses"] = 0
         try:
-            ranked, errors = discover()
+            if discovery_seed is None:
+                ranked, errors = discover()
+            else:
+                ranked = discovery_seed
+                errors = []
             tracked = {r["symbol"]: r for r in ranked}
             for s in state["positions"]:
                 tracked.setdefault(s, {"symbol": s, "day_change_pct": 0})
@@ -308,7 +309,7 @@ def run_once(now: datetime):
             for r in top_five:
                 s = r["symbol"]
                 checks = {
-                    "no_duplicate_position": s not in state["positions"],
+                    "no_duplicate_position": s not in state["positions"] and s not in {tx["symbol"] for tx in transactions},
                     "trend": r["price"] > r["ma9"] > r["ma20"],
                     "above_vwap": r["price"] > r["vwap"],
                     "volume": r["rvol20"] >= rules["rvol_min"],
@@ -363,10 +364,25 @@ def run_once(now: datetime):
         "realized_pnl": money(state["realized_pnl"]), "positions": state["positions"]}
     record = {"timestamp_et": now.isoformat(), "status": status, "note": note,
         "data_source": "Yahoo Finance via yfinance (possibly delayed/unofficial)",
-        "data_quality": f"5m completed bars; max age {MAX_BAR_AGE_MIN}min; paper fills at bar close plus costs",
+        "data_quality": f"1m completed bars; max age {MAX_BAR_AGE_MIN}min; paper fills at bar close plus costs",
         "session_bounds_et": [x.isoformat() for x in bounds] if bounds else None,
         "discovery": ranked, "indicators": candidates, "transactions": transactions,
         "portfolio": portfolio, "rules_version": rules["version"], "errors": errors}
+    return record, state, rules
+
+def persist_record(record: dict, state: dict, rules: dict, now: datetime) -> None:
+    record_path = DATA / "runs" / now.strftime("%Y-%m-%d/%H%M.json")
+    state_path = DATA / "portfolio.json"
+    rules_path = DATA / "rules.json"
+    transactions = record["transactions"]
+    portfolio = record["portfolio"]
+    candidates = record["indicators"]
+    note = record["note"]
+    status = record["status"]
+    errors = record["errors"]
+    if record_path.exists():
+        print("Previously recorded:", record_path)
+        return
     write_json(record_path, record)
     write_json(state_path, state)
     write_json(rules_path, rules)
@@ -409,5 +425,60 @@ Full run: \`{record_path.relative_to(ROOT)}\`.
     print(json.dumps({"status": status, "batch": bucket, "orders": len(transactions),
                       "equity": portfolio["equity"], "errors": errors[:3]}, ensure_ascii=False))
 
+def batch_main():
+    """Evaluate every ~60s inside one ~10m scheduled job; push just one 10m batch."""
+    start = datetime.now(NY)
+    DATA.mkdir(exist_ok=True)
+    bucket_start = start.replace(minute=(start.minute // 10) * 10, second=0, microsecond=0)
+    next_bucket = bucket_start + timedelta(minutes=10)
+    # Don't exceed run slot: leave 55 seconds to save/commit. Max 8 evaluations.
+    deadline = min(next_bucket - timedelta(seconds=55), start + timedelta(minutes=8))
+    state = read_json(DATA / "portfolio.json", initial_state())
+    rules = read_json(DATA / "rules.json", initial_rules())
+    archive_path = DATA / "runs" / bucket_start.strftime("%Y-%m-%d/%H%M.json")
+    if archive_path.exists():
+        print("Batch already recorded:", archive_path)
+        return
+    minute_logs = []
+    all_transactions = []
+    discovery_seed = None
+    for i in range(9):
+        now = datetime.now(NY)
+        if i > 0 and now > deadline:
+            break
+        rec, state, rules = run_once(now, state_override=state,
+                                    rules_override=rules, discovery_seed=discovery_seed)
+        if discovery_seed is None and rec["discovery"]:
+            discovery_seed = rec["discovery"]
+        all_transactions.extend(rec["transactions"])
+        minute_logs.append({"time_et": now.isoformat(), "status": rec["status"],
+                            "indicators": rec["indicators"],
+                            "transactions": rec["transactions"],
+                            "portfolio": rec["portfolio"],
+                            "errors": rec["errors"]})
+        # One-minute decisions, including exit checks and reallocation.
+        if rec["status"] == "SKIPPED":
+            break
+        next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1, seconds=2)
+        if next_minute > deadline:
+            break
+        time.sleep(max(0, (next_minute - datetime.now(NY)).total_seconds()))
+    if not minute_logs:
+        raise RuntimeError("No minute checks completed")
+    rec["timestamp_et"] = datetime.now(NY).isoformat()
+    rec["transactions"] = all_transactions
+    rec["minute_evaluations"] = minute_logs
+    rec["evaluation_interval_seconds_target"] = 60
+    rec["archive_interval_minutes"] = 10
+    rec["expected_batch_start_et"] = bucket_start.isoformat()
+    if all_transactions:
+        rec["status"] = "EXECUTED"
+    rec["portfolio"]["equity"] = money(equity(state))
+    rec["portfolio"]["cash"] = money(state["cash"])
+    rec["portfolio"]["market_value"] = money(equity(state) - state["cash"])
+    rec["portfolio"]["realized_pnl"] = money(state["realized_pnl"])
+    rec["portfolio"]["total_return_pct"] = round(100 * (equity(state) / SEED - 1), 3)
+    persist_record(rec, state, rules, bucket_start)
+
 if __name__ == "__main__":
-    run_once(datetime.now(NY))
+    batch_main()
