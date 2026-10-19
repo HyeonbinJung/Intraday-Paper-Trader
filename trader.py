@@ -57,7 +57,8 @@ def initial_rules() -> dict:
             "max_entries_per_day": 4, "max_fills_per_day": 10,
             "max_daily_turnover": 1.25, "max_daily_cost_pct": 0.004,
             "cost_coverage_multiple": 3.0, "min_target_pct": 0.009,
-            "max_participation": 0.01, "market_regime_filter": True}
+            "max_participation": 0.01, "market_regime_filter": True,
+            "min_entry_minutes_before_close": 45}
 
 def session_bounds(now: datetime):
     schedule = CAL.schedule(start_date=now.date(), end_date=now.date())
@@ -206,13 +207,15 @@ def learn_from_loss(state: dict, rules: dict, tx: dict, now: datetime):
     state["consecutive_losses"] += 1
     state["cooldowns"][tx["symbol"]] = (now + timedelta(
         minutes=rules["cooldown_minutes"])).isoformat()
+    category = tx.get("loss_category", tx["reason"])
     hypothesis = {
+        "COST_DRAG": "Gross move was nonnegative, but fees/slippage made net P&L negative",
         "STOP": "ATR stop crossed: volatility/trend reversal",
         "TREND_BREAK": "Moving-average trend failed",
         "SESSION_EXIT": "Entry failed to reach target before cutoff",
         "PREVIOUS_SESSION": "Delayed close may have exposed an overnight gap",
         "TAKE_PROFIT": "Round-trip costs overcame the raw profit",
-    }.get(tx["reason"], "Net of costs, signal did not outperform")
+    }.get(category, "Net of costs, signal did not outperform")
     changes = []
     previous = rules["risk_per_trade"]
     scale = 0.8 if state["consecutive_losses"] >= 2 else 0.93
@@ -228,10 +231,24 @@ def learn_from_loss(state: dict, rules: dict, tx: dict, now: datetime):
     rules["cooldown_minutes"] = min(90, prev_cooldown + 5)
     if rules["cooldown_minutes"] != prev_cooldown:
         changes.append(f"cooldown_minutes {prev_cooldown} -> {rules['cooldown_minutes']}")
+    if category == "COST_DRAG":
+        old = rules["cost_coverage_multiple"]
+        rules["cost_coverage_multiple"] = round(min(5.0, old + 0.5), 2)
+        if old != rules["cost_coverage_multiple"]:
+            changes.append(f"cost_coverage_multiple {old:.2f} -> "
+                           f"{rules['cost_coverage_multiple']:.2f}")
+    # No frantic late-day replacement trades after a failed close.
+    if category == "SESSION_EXIT":
+        old = rules["min_entry_minutes_before_close"]
+        rules["min_entry_minutes_before_close"] = min(90, old + 5)
+        changes.append(f"min_entry_minutes_before_close {old} -> "
+                       f"{rules['min_entry_minutes_before_close']}")
     rules["version"] += 1
     rules["lessons"].append({
         "time_et": now.isoformat(), "symbol": tx["symbol"],
         "net_pnl": tx["realized_pnl"], "exit_reason": tx["reason"],
+        "loss_category": category, "gross_reference_pnl": tx.get("gross_reference_pnl"),
+        "roundtrip_estimated_cost": tx.get("roundtrip_estimated_cost"),
         "hypothesis_not_proven_cause": hypothesis,
         "rules_changed_immediately": changes, "applies_from_next_minute": True,
         "github_archive": "next 10-minute commit",
@@ -256,7 +273,8 @@ def execute(state: dict, rules: dict, now: datetime, sym: str, side: str, qty: i
             return
         state["cash"] -= gross + fee
         state["positions"][sym] = {"qty": qty, "entry_price": price, "entry_fee": fee,
-            "entry_time": now.isoformat(), "highest_observed": market_px,
+            "entry_time": now.isoformat(), "entry_reference_price": market_px,
+            "highest_observed": market_px,
             "stop": market_px - rules["stop_atr"] * float(tx.get("entry_atr", 0)),
             "entry_rule_version": rules["version"]}
         tx["cash_flow"] = money(-(gross + fee))
@@ -271,6 +289,13 @@ def execute(state: dict, rules: dict, now: datetime, sym: str, side: str, qty: i
         del state["positions"][sym]
         tx["cash_flow"] = money(net_proceeds)
         tx["realized_pnl"] = money(pnl)
+        tx["gross_reference_pnl"] = money(qty * (
+            market_px - held.get("entry_reference_price", held["entry_price"])))
+        tx["roundtrip_estimated_cost"] = money(tx["gross_reference_pnl"] - pnl)
+        if pnl < 0 and tx["gross_reference_pnl"] >= 0:
+            tx["loss_category"] = "COST_DRAG"
+        elif pnl < 0:
+            tx["loss_category"] = reason
         tx["holding_minutes"] = round((now - datetime.fromisoformat(held["entry_time"])).total_seconds()/60, 1)
         if pnl < 0:
             learn_from_loss(state, rules, tx, now)
@@ -378,6 +403,9 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
                 if reason:
                     execute(state, rules, now, sym, "SELL", pos["qty"], px,
                             reason, ind["bar_end"], transactions)
+            # New entries must have time to overcome round-trip costs before close.
+            new_entry_cutoff = closing - timedelta(
+                minutes=rules["min_entry_minutes_before_close"])
             # Top 5 volatile movers, with long-only technical confirmation.
             with_metadata = [dict(r, discovery_score=next(
                 (m.get("discovery_score", 0) for m in ranked if m["symbol"] == r["symbol"]), 0))
@@ -401,7 +429,7 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
                     "cooldown_finished": now >= datetime.fromisoformat(
                         state["cooldowns"].get(s, "2000-01-01T00:00:00-05:00")),
                     "new_bar": r["bar_end"] != state["last_bar_by_symbol"].get(s),
-                    "risk_active": not halted and now < cutoff,
+                    "risk_active": not halted and now < new_entry_cutoff,
                     "capacity": len(state["positions"]) < rules["max_positions"],
                     "market_regime": regime_ok or not rules["market_regime_filter"],
                     "daily_entry_limit": state["daily_entries"] < rules["max_entries_per_day"],
