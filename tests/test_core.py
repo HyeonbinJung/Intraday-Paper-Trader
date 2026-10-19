@@ -1,11 +1,14 @@
 import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from trader import initial_state, initial_rules, equity, learn_from_loss, execute, session_bounds
+from trader import START_DATE, initial_state, initial_rules, equity, learn_from_loss, execute, session_bounds
 
 NY = ZoneInfo("America/New_York")
 
 class CoreTests(unittest.TestCase):
+    def test_start_date(self):
+        self.assertEqual(START_DATE.isoformat(), '2026-10-19')
+
     def test_seed(self):
         s = initial_state()
         self.assertEqual(equity(s), 100_000)
