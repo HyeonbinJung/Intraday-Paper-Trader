@@ -42,14 +42,22 @@ def initial_state() -> dict:
     return {"initial_capital": SEED, "cash": SEED, "positions": {},
             "realized_pnl": 0.0, "session": "", "session_start_equity": SEED,
             "losses_today": 0, "consecutive_losses": 0, "cooldowns": {},
-            "last_prices": {}, "last_bar_by_symbol": {}, "last_run": None}
+            "last_prices": {}, "last_bar_by_symbol": {}, "last_run": None,
+            "daily_entries": 0, "daily_fills": 0, "daily_turnover_notional": 0.0,
+            "daily_trading_cost": 0.0, "last_exit_at": {}}
 
 def initial_rules() -> dict:
     return {"version": 1, "risk_per_trade": 0.007, "max_position_pct": 0.20,
             "max_gross_exposure": 0.55, "max_positions": 3, "rvol_min": 1.30,
             "max_daily_drawdown": 0.025, "max_daily_losses": 3,
             "stop_atr": 1.5, "target_atr": 2.7, "cooldown_minutes": 30,
-            "min_price": 2.0, "lessons": []}
+            "min_price": 5.0, "lessons": [],
+            # 2025H1: 31,241 fills and $48,052 estimated costs caused -59.19%.
+            "min_holding_minutes": 10, "min_reentry_minutes": 30,
+            "max_entries_per_day": 4, "max_fills_per_day": 10,
+            "max_daily_turnover": 1.25, "max_daily_cost_pct": 0.004,
+            "cost_coverage_multiple": 3.0, "min_target_pct": 0.009,
+            "max_participation": 0.01, "market_regime_filter": True}
 
 def session_bounds(now: datetime):
     schedule = CAL.schedule(start_date=now.date(), end_date=now.date())
@@ -95,7 +103,7 @@ def discover() -> tuple[list, list]:
     return ranked[:15], errors
 
 def indicators(sym: str, now: datetime, pct: float = 0.0):
-    """Evaluate only already-completed 5-minute bars; never fabricate market data."""
+    """Evaluate completed 1-minute bars only; never fabricate market data."""
     df = yf.Ticker(sym).history(period="2d", interval="1m", prepost=False, auto_adjust=False)
     if df is None or len(df) < 25 or getattr(df.index, "tz", None) is None:
         return None
@@ -142,12 +150,55 @@ def indicators(sym: str, now: datetime, pct: float = 0.0):
             "rsi14": round(float(rsi), 2), "rvol20": round(rvol, 2),
             "atr14": round(atr, 4), "atr_pct": round(100*atr/px, 2),
             "day_change_pct": pct, "bar_end": bar_end.isoformat(),
+            "prior_minute_volume": int(df["Volume"].iloc[-2]),
             "bar_age_min": round(age, 1)}
 
 def append_line(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as out:
         out.write(json.dumps(obj, ensure_ascii=False, default=str) + "\n")
+
+
+def apply_2025_risk_defaults(state: dict, rules: dict):
+    """Migrate existing persisted state without resetting past trading history."""
+    defaults = initial_state()
+    for k in ("daily_entries", "daily_fills", "daily_turnover_notional",
+              "daily_trading_cost", "last_exit_at"):
+        state.setdefault(k, defaults[k])
+    for key, value in initial_rules().items():
+        rules.setdefault(key, value)
+
+def entry_guards(state: dict, rules: dict, now: datetime, row: dict,
+                 regime_ok: bool, pending_qty: int = 0) -> dict:
+    """Cost-aware and turnover-aware checks evaluated at every minute."""
+    symbol = row["symbol"]
+    price = float(row["price"])
+    atr = float(row["atr14"])
+    last_exit = state["last_exit_at"].get(symbol)
+    last_exit_dt = datetime.fromisoformat(last_exit) if last_exit else None
+    # 5 bp fee + 10 bp modeled slippage each side => 30 bp round-trip.
+    modeled_cost_rate = 2 * (FEE_RATE + SLIPPAGE)
+    target_pct = rules["target_atr"] * atr / max(price, 1e-9)
+    cost_hurdle_pct = max(rules["min_target_pct"],
+                          modeled_cost_rate * rules["cost_coverage_multiple"])
+    budget = state["session_start_equity"]
+    # Reserves one hypothetical round-trip for each entry; exits are never blocked.
+    notional = pending_qty * price
+    return {
+        "market_regime": (regime_ok or not rules["market_regime_filter"]),
+        "payoff_covers_costs": target_pct >= cost_hurdle_pct,
+        "min_reentry_elapsed": last_exit_dt is None or
+            (now - last_exit_dt).total_seconds() / 60 >= rules["min_reentry_minutes"],
+        "daily_entry_limit": state["daily_entries"] < rules["max_entries_per_day"],
+        "daily_fill_limit": state["daily_fills"] + 2 <= rules["max_fills_per_day"],
+        "daily_turnover_limit": state["daily_turnover_notional"] +
+            2 * notional <= budget * rules["max_daily_turnover"],
+        "daily_cost_budget": state["daily_trading_cost"] +
+            2 * notional * modeled_cost_rate / 2 <= budget * rules["max_daily_cost_pct"],
+        "volume_participation": pending_qty <= max(0, int(
+            row["prior_minute_volume"] * rules["max_participation"])),
+    }
+
 
 def learn_from_loss(state: dict, rules: dict, tx: dict, now: datetime):
     """Every realized loss updates in-memory rules immediately, applied on next minute."""
@@ -225,6 +276,17 @@ def execute(state: dict, rules: dict, now: datetime, sym: str, side: str, qty: i
             learn_from_loss(state, rules, tx, now)
         else:
             state["consecutive_losses"] = 0
+    # Costs are recorded for BOTH sides; guard exit fills from limit-based blocking.
+    state["daily_fills"] += 1
+    state["daily_turnover_notional"] += market_px * qty
+    state["daily_trading_cost"] += abs(price - market_px) * qty + fee
+    tx["estimated_cost"] = money(abs(price - market_px) * qty + fee)
+    tx["daily_fills_after"] = state["daily_fills"]
+    tx["daily_turnover_after"] = money(state["daily_turnover_notional"])
+    if side == "BUY":
+        state["daily_entries"] += 1
+    else:
+        state["last_exit_at"][sym] = now.isoformat()
     transactions.append(tx)
 
 def run_once(now: datetime, state_override=None, rules_override=None, discovery_seed=None):
@@ -233,6 +295,7 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
     rules_path = DATA / "rules.json"
     state = state_override if state_override is not None else read_json(state_path, initial_state())
     rules = rules_override if rules_override is not None else read_json(rules_path, initial_rules())
+    apply_2025_risk_defaults(state, rules)
     bucket = now.strftime("%Y-%m-%d/%H%M")
     record_path = DATA / "runs" / (bucket + ".json")
     bounds = session_bounds(now)
@@ -245,7 +308,7 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
     started = now.date() >= START_DATE
     is_open = started and bounds is not None and bounds[0] <= now < bounds[1]
     if not started:
-        note = "Simulation starts 2026-10-20; no trades before that date."
+        note = f"Simulation starts {START_DATE.isoformat()}; no trades before that date."
     elif bounds is None:
         note = "NYSE closed: holiday or weekend."
     elif not is_open:
@@ -258,6 +321,10 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
             state["session_start_equity"] = equity(state)
             state["losses_today"] = 0
             state["consecutive_losses"] = 0
+            state["daily_entries"] = 0
+            state["daily_fills"] = 0
+            state["daily_turnover_notional"] = 0.0
+            state["daily_trading_cost"] = 0.0
         try:
             if discovery_seed is None:
                 ranked, errors = discover()
@@ -267,6 +334,8 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
             tracked = {r["symbol"]: r for r in ranked}
             for s in state["positions"]:
                 tracked.setdefault(s, {"symbol": s, "day_change_pct": 0})
+            # Macro regime observation may veto NEW entries, but cannot veto exits.
+            tracked.setdefault("SPY", {"symbol": "SPY", "day_change_pct": 0})
             for symbol, meta in list(tracked.items()):
                 try:
                     ind = indicators(symbol, now, meta["day_change_pct"])
@@ -275,6 +344,11 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
                 except Exception as exc:
                     errors.append(f"{symbol}: {type(exc).__name__}: {str(exc)[:150]}")
             observed = {r["symbol"]: r for r in candidates}
+            spy = observed.get("SPY")
+            regime_ok = bool(spy and spy["ma9"] >= spy["ma20"] and
+                             spy["price"] >= spy["vwap"] and spy["price"] >= spy["ma20"])
+            if not regime_ok:
+                errors.append("SPY_BEARISH_OR_MISSING: no new entries; existing exits still checked")
             for s, r in observed.items():
                 state["last_prices"][s] = r["price"]
             # Liquidation signals before entries, including positions missed at a previous close.
@@ -295,10 +369,12 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
                     reason = "SESSION_EXIT"
                 elif px <= stop:
                     reason = "STOP"
-                elif px >= pos["entry_price"] + rules["target_atr"] * atr:
-                    reason = "TAKE_PROFIT"
-                elif px < ind["ma20"] and ind["ma9"] < ind["ma20"]:
-                    reason = "TREND_BREAK"
+                elif (now - datetime.fromisoformat(pos["entry_time"])).total_seconds() >= (
+                        60 * rules["min_holding_minutes"]):
+                    if px >= pos["entry_price"] + rules["target_atr"] * atr:
+                        reason = "TAKE_PROFIT"
+                    elif px < ind["ma20"] and ind["ma9"] < ind["ma20"]:
+                        reason = "TREND_BREAK"
                 if reason:
                     execute(state, rules, now, sym, "SELL", pos["qty"], px,
                             reason, ind["bar_end"], transactions)
@@ -326,7 +402,13 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
                         state["cooldowns"].get(s, "2000-01-01T00:00:00-05:00")),
                     "new_bar": r["bar_end"] != state["last_bar_by_symbol"].get(s),
                     "risk_active": not halted and now < cutoff,
-                    "capacity": len(state["positions"]) < rules["max_positions"]
+                    "capacity": len(state["positions"]) < rules["max_positions"],
+                    "market_regime": regime_ok or not rules["market_regime_filter"],
+                    "daily_entry_limit": state["daily_entries"] < rules["max_entries_per_day"],
+                    "daily_fill_limit": state["daily_fills"] + 2 <= rules["max_fills_per_day"],
+                    "payoff_covers_costs": (r["atr14"] * rules["target_atr"] / r["price"]) >=
+                        max(rules["min_target_pct"], 2 * (FEE_RATE + SLIPPAGE) *
+                            rules["cost_coverage_multiple"])
                 }
                 r["entry_checks"] = checks
                 if not all(checks.values()):
@@ -339,9 +421,25 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
                 held_mv = sum(p["qty"] * state["last_prices"].get(k, p["entry_price"])
                               for k, p in state["positions"].items())
                 max_qty_gross = math.floor(max(0, eq * rules["max_gross_exposure"] - held_mv) / r["price"])
-                qty = min(max_qty_risk, max_qty_cash, max_qty_single, max_qty_gross)
+                max_qty_volume = math.floor(r["prior_minute_volume"] * rules["max_participation"])
+                max_qty_turnover = math.floor(max(0, state["session_start_equity"] *
+                    rules["max_daily_turnover"] - state["daily_turnover_notional"]) /
+                    (2 * r["price"]))
+                estimated_cost_per_share = 2 * r["price"] * (FEE_RATE + SLIPPAGE)
+                max_qty_cost = math.floor(max(0, state["session_start_equity"] *
+                    rules["max_daily_cost_pct"] - state["daily_trading_cost"]) /
+                    estimated_cost_per_share)
+                qty = min(max_qty_risk, max_qty_cash, max_qty_single, max_qty_gross,
+                          max_qty_volume, max_qty_turnover, max_qty_cost)
                 if qty < 1:
-                    r["entry_checks"]["sufficient_capacity"] = False
+                    r["entry_checks"]["sufficient_capacity_or_budget"] = False
+                    continue
+                additional = entry_guards(state, rules, now, r, regime_ok, qty)
+                r["entry_checks"].update(additional)
+                r["projected_roundtrip_cost_pct"] = round(200 * (FEE_RATE + SLIPPAGE), 4)
+                r["target_move_pct_proxy_not_forecast"] = round(
+                    100 * r["atr14"] * rules["target_atr"] / r["price"], 4)
+                if not all(additional.values()):
                     continue
                 execute(state, rules, now, s, "BUY", qty, r["price"],
                         "MOMENTUM_MA9_MA20_VWAP_RVOL", r["bar_end"], transactions)
@@ -374,7 +472,15 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
         "data_quality": f"1m completed bars; max age {MAX_BAR_AGE_MIN}min; paper fills at bar close plus costs",
         "session_bounds_et": [x.isoformat() for x in bounds] if bounds else None,
         "discovery": ranked, "indicators": candidates, "transactions": transactions,
-        "portfolio": portfolio, "rules_version": rules["version"], "errors": errors}
+        "portfolio": portfolio, "rules_version": rules["version"], "errors": errors,
+        "turnover_risk": {
+            "daily_entries": state["daily_entries"],
+            "daily_fills": state["daily_fills"],
+            "daily_turnover_notional": money(state["daily_turnover_notional"]),
+            "daily_estimated_transaction_cost": money(state["daily_trading_cost"]),
+            "daily_turnover_limit_notional": money(state["session_start_equity"] *
+                rules["max_daily_turnover"])
+        }}
     return record, state, rules
 
 def persist_record(record: dict, state: dict, rules: dict, now: datetime) -> None:
@@ -464,6 +570,7 @@ def batch_main():
                             "indicators": rec["indicators"],
                             "transactions": rec["transactions"],
                             "portfolio": rec["portfolio"],
+                            "turnover_risk": rec["turnover_risk"],
                             "rules_version_before": previous_version,
                             "rules_version_after": rules["version"],
                             "risk_rules_applied": {
@@ -488,6 +595,7 @@ def batch_main():
     rec["evaluation_interval_seconds_target"] = 60
     rec["archive_interval_minutes"] = 10
     rec["rules_version"] = rules["version"]
+    rec["turnover_risk"] = minute_logs[-1]["turnover_risk"]
     rec["rule_updates_during_batch"] = [lesson for event in minute_logs for lesson in event["new_loss_reviews"]]
     rec["expected_batch_start_et"] = bucket_start.isoformat()
     if all_transactions:
