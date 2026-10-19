@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from trader import (START_DATE, initial_state, initial_rules, equity, learn_from_loss,
-                    execute, session_bounds, apply_2025_risk_defaults, entry_guards)
+                    execute, session_bounds, effective_session_bounds, apply_2025_risk_defaults, entry_guards)
 
 NY = ZoneInfo("America/New_York")
 
@@ -95,6 +95,16 @@ class CoreTests(unittest.TestCase):
         apply_2025_risk_defaults(state, rules)
         self.assertEqual(state["daily_fills"], 0)
         self.assertEqual(rules["min_entry_minutes_before_close"], 45)
+
+    def test_october_19_user_cutoff_at_2pm_et(self):
+        before = datetime(2026, 10, 19, 13, 30, tzinfo=NY)
+        opening, closing = effective_session_bounds(before)
+        self.assertEqual((opening.hour, opening.minute), (9, 30))
+        self.assertEqual((closing.hour, closing.minute), (14, 0))
+        after = datetime(2026, 10, 19, 14, 9, tzinfo=NY)
+        self.assertGreaterEqual(after, effective_session_bounds(after)[1])
+        future = datetime(2026, 10, 20, 14, 9, tzinfo=NY)
+        self.assertEqual(effective_session_bounds(future)[1].hour, 16)
 
     def test_holiday(self):
         self.assertIsNone(session_bounds(datetime(2026, 12, 25, 12, tzinfo=NY)))
