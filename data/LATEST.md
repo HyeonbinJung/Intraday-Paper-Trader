@@ -1,6 +1,6 @@
 # Latest paper-trading batch
 
-- Time (ET): 2026-10-20T14:00:00-04:00
+- Time (ET): 2026-10-20T14:20:00-04:00
 - Status: **NO_TRADE**
 - Paper equity: **\$100,000.00**
 - Cash: \$100,000.00
@@ -11,11 +11,11 @@
 - Warning: **No real orders. Unofficial/delayed quotes. Backtest-quality, not execution-quality fills.**
 
 ## Top candidates
-- BRZE: \$45.56, change +51.51%, RVOL 2.74, RSI 66.2
-- LION: \$12.19, change +15.15%, RVOL 0.17, RSI 54.1
-- KVYO: \$19.73, change +12.53%, RVOL 1.53, RSI 65.0
-- SLS: \$11.70, change +11.64%, RVOL 0.16, RSI 62.3
-- SRPT: \$19.59, change +9.80%, RVOL 2.16, RSI 80.7
+- BRZE: \$45.59, change +51.70%, RVOL 0.20, RSI 66.1
+- LION: \$12.25, change +15.63%, RVOL 1.48, RSI 53.8
+- KVYO: \$19.77, change +13.04%, RVOL 0.42, RSI 53.2
+- EFX: \$176.08, change +10.77%, RVOL 2.13, RSI 70.3
+- SE: \$81.24, change -8.05%, RVOL 8.89, RSI 50.6
 
 ## Open positions
 - None
@@ -23,4 +23,4 @@
 ## Batch note
  Some data requests failed; affected symbols were not traded.
 
-Full run: \`data/runs/2026-10-20/1400.json\`.
+Full run: \`data/runs/2026-10-20/1420.json\`.
