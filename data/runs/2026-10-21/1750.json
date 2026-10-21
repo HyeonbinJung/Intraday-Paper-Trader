@@ -1,0 +1,68 @@
+{
+  "timestamp_et": "2026-10-21T17:53:25.835646-04:00",
+  "status": "SKIPPED",
+  "note": "Outside NYSE regular session.",
+  "data_source": "Yahoo Finance via yfinance (possibly delayed/unofficial)",
+  "data_quality": "1m completed bars; max age 3min; paper fills at bar close plus costs",
+  "session_bounds_et": [
+    "2026-10-21T09:30:00-04:00",
+    "2026-10-21T16:00:00-04:00"
+  ],
+  "discovery": [],
+  "indicators": [],
+  "transactions": [],
+  "portfolio": {
+    "cash": 100000.0,
+    "equity": 100000.0,
+    "market_value": 0.0,
+    "total_return_pct": 0.0,
+    "realized_pnl": 0.0,
+    "positions": {}
+  },
+  "rules_version": 2,
+  "errors": [],
+  "rejected_entry_reasons": [],
+  "turnover_risk": {
+    "daily_entries": 0,
+    "daily_fills": 0,
+    "daily_turnover_notional": 0.0,
+    "daily_estimated_transaction_cost": 0.0,
+    "daily_turnover_limit_notional": 125000.0
+  },
+  "minute_evaluations": [
+    {
+      "time_et": "2026-10-21T17:53:25.831339-04:00",
+      "status": "SKIPPED",
+      "indicators": [],
+      "transactions": [],
+      "portfolio": {
+        "cash": 100000.0,
+        "equity": 100000.0,
+        "market_value": 0.0,
+        "total_return_pct": 0.0,
+        "realized_pnl": 0.0,
+        "positions": {}
+      },
+      "turnover_risk": {
+        "daily_entries": 0,
+        "daily_fills": 0,
+        "daily_turnover_notional": 0.0,
+        "daily_estimated_transaction_cost": 0.0,
+        "daily_turnover_limit_notional": 125000.0
+      },
+      "rules_version_before": 2,
+      "rules_version_after": 2,
+      "risk_rules_applied": {
+        "risk_per_trade": 0.007,
+        "rvol_min": 1.3,
+        "cooldown_minutes": 30
+      },
+      "new_loss_reviews": [],
+      "errors": []
+    }
+  ],
+  "evaluation_interval_seconds_target": 60,
+  "archive_interval_minutes": 10,
+  "rule_updates_during_batch": [],
+  "expected_batch_start_et": "2026-10-21T17:50:00-04:00"
+}
