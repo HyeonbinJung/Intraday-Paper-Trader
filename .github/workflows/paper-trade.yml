@@ -18,6 +18,8 @@ concurrency:
 
 jobs:
   paper-trade:
+    # Set this repository variable to 'true' only after the dedicated worker is live.
+    if: vars.PAPER_TRADER_EXTERNAL_WORKER != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -39,6 +41,11 @@ jobs:
 
       - name: Evaluate paper portfolio (US market time gate in Python)
         run: python trader.py
+      - name: Surface market-minute coverage and rejection diagnostics
+        if: always()
+        run: |
+          if [ -f data/HEALTH.md ]; then sed -n '1,30p' data/HEALTH.md; fi
+          if [ -f data/LATEST.md ]; then sed -n '1,35p' data/LATEST.md; fi
 
       - name: Append and commit this batch
         shell: bash

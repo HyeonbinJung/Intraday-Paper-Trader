@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+data/worker_checkpoint.json
+data/*.tmp
+storage/
