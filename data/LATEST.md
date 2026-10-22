@@ -1,36 +1,37 @@
-# Latest paper-trading batch (regular session)
+# Latest paper-trading batch
 
-- Time (ET): 2026-10-21T14:20:00-04:00
+- Time (ET): 2026-10-22T14:00:00-04:00
 - Status: **NO_TRADE**
 - Paper equity: **$100,000.00**
 - Cash: $100,000.00
 - Total return: +0.000%
 - Realized P&L: $0.00
 - Simulated orders this batch: 0
-- Minute evaluations: 6
-- Screened top-five evaluations: 30
+- Minute evaluations: 2
+- Screened top-five evaluations: 10
+- First evaluation delayed from 10-minute slot: 530 seconds
 - Risk rule version: 2
 - Warning: **No real orders. Unofficial/delayed quotes. Backtest-quality, not execution-quality fills.**
 
 ## Top candidates
-- RCUS: $19.53, change -17.17%, RVOL 1.13, RSI 29.8
-- ASST: $31.27, change +15.41%, RVOL 0.39, RSI 58.1
-- GLXY: $17.29, change +10.47%, RVOL 1.51, RSI 39.4
-- SEI: $69.99, change +10.83%, RVOL 2.34, RSI 46.9
-- APPN: $48.99, change +9.86%, RVOL 12.89, RSI 70.4
+- TTMI: $72.39, change -29.16%, RVOL 2.53, RSI 51.5
+- BHVN: $14.81, change +26.13%, RVOL 0.82, RSI 55.6
+- FPS: $23.61, change -25.66%, RVOL 0.72, RSI 49.3
+- MRNA: $184.62, change -24.92%, RVOL 0.45, RSI 52.4
+- CRS: $286.98, change -22.05%, RVOL 1.13, RSI 59.7
 
 ## Failed entry checks (counts may overlap)
-- payoff_covers_costs: 25
-- trend: 15
-- volume: 13
-- rsi: 13
-- above_vwap: 9
-- new_bar: 8
+- above_vwap: 10
+- market_regime: 10
+- trend: 10
+- payoff_covers_costs: 8
+- volume: 8
+- rsi: 7
 
 ## Open positions
 - None
 
 ## Batch note
-No buy met all entry rules. The later 17:50 ET after-hours batch was SKIPPED and does not represent trading activity.
+ Some data requests failed; affected symbols were not traded.
 
-Full run: `data/runs/2026-10-21/1420.json`.
+Full run: `data/runs/2026-10-22/1400.json`.
