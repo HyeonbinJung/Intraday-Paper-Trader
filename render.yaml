@@ -1,0 +1,28 @@
+# Deploy this Blueprint as ONE worker after reviewing the paid plan.
+# Do not turn off GitHub fallback until worker logs show MINUTE_EVALUATED.
+services:
+  - type: worker
+    name: intraday-paper-trader
+    runtime: python
+    plan: 0.5c-512mb
+    region: ohio
+    numInstances: 1
+    autoDeployTrigger: off
+    buildCommand: pip install -r requirements.txt
+    # Fresh Git checkout includes the latest committed portfolio state.
+    startCommand: >-
+      bash -lc 'RUN_DIR=$(mktemp -d) &&
+      git clone --depth 1 https://github.com/HyeonbinJung/Intraday-Paper-Trader.git "$RUN_DIR" &&
+      cd "$RUN_DIR" && python continuous_worker.py'
+    maxShutdownDelaySeconds: 120
+    envVars:
+      - key: PAPER_GIT_PUSH
+        value: "1"
+      - key: PAPER_CHECKPOINT_DIR
+        value: /opt/render/project/src/storage
+      - key: GITHUB_TOKEN
+        sync: false
+    disk:
+      name: paper-checkpoint
+      mountPath: /opt/render/project/src/storage
+      sizeGB: 1

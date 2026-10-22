@@ -1,8 +1,10 @@
 import unittest
+from unittest.mock import patch
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from trader import (START_DATE, initial_state, initial_rules, equity, learn_from_loss,
-                    execute, session_bounds, effective_session_bounds, apply_2025_risk_defaults, entry_guards)
+                    execute, session_bounds, effective_session_bounds, apply_2025_risk_defaults, entry_guards,
+                    run_once, summarize_entry_checks, build_batch_record)
 
 NY = ZoneInfo("America/New_York")
 
@@ -105,6 +107,53 @@ class CoreTests(unittest.TestCase):
         self.assertGreaterEqual(after, effective_session_bounds(after)[1])
         future = datetime(2026, 10, 20, 14, 9, tzinfo=NY)
         self.assertEqual(effective_session_bounds(future)[1].hour, 16)
+
+    def test_integrated_paper_buy_then_stop_exit(self):
+        """The complete signal->guard->fill path must be reachable with fresh bars."""
+        state, rules = initial_state(), initial_rules()
+        now = datetime(2026, 10, 22, 10, 0, tzinfo=NY)
+        source = [{"symbol": "ABC", "day_change_pct": 5,
+                   "discovery_score": 50}]
+        def make_row(sym, moment, change, px=100):
+            return {"symbol": sym, "price": px, "ma9": 99,
+                    "ma20": 98, "vwap": 99 if sym == "SPY" else 95,
+                    "rsi14": 60, "rvol20": 2.0, "atr14": 2.0,
+                    "atr_pct": 2.0, "day_change_pct": change,
+                    "bar_end": moment.replace(second=0, microsecond=0).isoformat(),
+                    "prior_minute_volume": 200_000, "bar_age_min": 0.1}
+        def fresh(symbol, moment, change):
+            return make_row(symbol, moment, change)
+        with patch("trader.indicators", side_effect=fresh):
+            first, state, rules = run_once(now, state, rules, source)
+        self.assertEqual(first["status"], "EXECUTED")
+        self.assertEqual(first["transactions"][0]["side"], "BUY")
+        self.assertEqual(state["daily_entries"], 1)
+        self.assertIn("ABC", state["positions"])
+        self.assertLess(equity(state), 100_000)
+
+        def dropped(symbol, moment, change):
+            row = make_row(symbol, moment, change, 96 if symbol == "ABC" else 100)
+            return row
+        with patch("trader.indicators", side_effect=dropped):
+            second, state, rules = run_once(
+                datetime(2026, 10, 22, 10, 1, tzinfo=NY),
+                state, rules, source)
+        self.assertEqual(second["status"], "EXECUTED")
+        self.assertEqual(second["transactions"][0]["side"], "SELL")
+        self.assertEqual(second["transactions"][0]["reason"], "STOP")
+        self.assertNotIn("ABC", state["positions"])
+        self.assertEqual(state["daily_fills"], 2)
+
+    def test_rejection_summary_is_diagnostic_only(self):
+        events = [{"indicators": [
+            {"top_five": True, "entry_checks": {"volume": False, "market_regime": False}},
+            {"top_five": True, "entry_checks": {"volume": False, "market_regime": True}},
+            {"top_five": False, "entry_checks": {}}]}]
+        diag = summarize_entry_checks(events)
+        self.assertEqual(diag["top_five_evaluations"], 2)
+        self.assertEqual(diag["approved_entries"], 0)
+        self.assertEqual(diag["failed_check_counts"]["volume"], 2)
+        self.assertEqual(diag["failed_check_counts"]["market_regime"], 1)
 
     def test_holiday(self):
         self.assertIsNone(session_bounds(datetime(2026, 12, 25, 12, tzinfo=NY)))

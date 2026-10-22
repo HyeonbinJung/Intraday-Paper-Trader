@@ -37,7 +37,10 @@ def read_json(path: Path, default: dict) -> dict:
 
 def write_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+    payload = json.dumps(obj, ensure_ascii=False, indent=2, default=str) + "\n"
+    staging = path.with_name(path.name + ".tmp")
+    staging.write_text(payload, encoding="utf-8")
+    os.replace(staging, path)
 
 def money(x: float) -> float:
     return round(float(x), 2)
@@ -545,6 +548,107 @@ def run_once(now: datetime, state_override=None, rules_override=None, discovery_
         }}
     return record, state, rules
 
+def summarize_entry_checks(minute_logs: list) -> dict:
+    """Count actual rejections, rather than treating NO_TRADE as a runner failure."""
+    failed = {}
+    evaluated = 0
+    accepted = 0
+    for event in minute_logs:
+        for row in event.get("indicators", []):
+            if not row.get("top_five"):
+                continue
+            checks = row.get("entry_checks") or {}
+            if not checks:
+                continue
+            evaluated += 1
+            if checks.get("executed", False):
+                accepted += 1
+            for name, passed in checks.items():
+                if passed is False:
+                    failed[name] = failed.get(name, 0) + 1
+    return {"top_five_evaluations": evaluated,
+            "approved_entries": accepted,
+            "failed_check_counts": dict(sorted(failed.items(),
+                                                key=lambda item: (-item[1], item[0])))}
+
+
+def build_batch_record(rec: dict, minute_logs: list, all_transactions: list,
+                       state: dict, rules: dict, bucket_start: datetime) -> dict:
+    """Share identical aggregation between GitHub Actions and the continuous worker."""
+    record = dict(rec)
+    record["timestamp_et"] = datetime.now(NY).isoformat()
+    record["transactions"] = all_transactions
+    record["minute_evaluations"] = minute_logs
+    record["evaluation_interval_seconds_target"] = 60
+    record["archive_interval_minutes"] = 10
+    record["rules_version"] = rules["version"]
+    record["turnover_risk"] = minute_logs[-1]["turnover_risk"]
+    record["rule_updates_during_batch"] = [
+        lesson for event in minute_logs for lesson in event["new_loss_reviews"]]
+    record["expected_batch_start_et"] = bucket_start.isoformat()
+    record["entry_diagnostics"] = summarize_entry_checks(minute_logs)
+    record["first_evaluation_delay_seconds"] = max(0, round((
+        datetime.fromisoformat(minute_logs[0]["time_et"]) - bucket_start
+    ).total_seconds()))
+    if all_transactions:
+        record["status"] = "EXECUTED"
+    record["portfolio"]["equity"] = money(equity(state))
+    record["portfolio"]["cash"] = money(state["cash"])
+    record["portfolio"]["market_value"] = money(equity(state) - state["cash"])
+    record["portfolio"]["realized_pnl"] = money(state["realized_pnl"])
+    record["portfolio"]["total_return_pct"] = round(100 * (equity(state) / SEED - 1), 3)
+    return record
+
+
+def write_health_report(now: datetime) -> None:
+    """Show gaps in actual market-minute observations, including missing cron jobs."""
+    bounds = effective_session_bounds(now)
+    if bounds is None:
+        return
+    opening, closing = bounds
+    elapsed = max(0, int((min(now, closing) - opening).total_seconds() // 60))
+    report_dir = DATA / "runs" / now.strftime("%Y-%m-%d")
+    observed_minutes = set()
+    recorded_batches = 0
+    fills = 0
+    statuses = {}
+    for path in sorted(report_dir.glob("*.json")):
+        try:
+            saved = read_json(path, {})
+            recorded_batches += 1
+            fills += len(saved.get("transactions", []))
+            status = saved.get("status", "UNKNOWN")
+            statuses[status] = statuses.get(status, 0) + 1
+            for check in saved.get("minute_evaluations", []):
+                timestamp = datetime.fromisoformat(check["time_et"])
+                if opening <= timestamp < min(now, closing):
+                    observed_minutes.add(timestamp.replace(second=0, microsecond=0).isoformat())
+        except (ValueError, KeyError, OSError) as exc:
+            print(f"HEALTH_BAD_RECORD: {path}: {exc}")
+    observed = len(observed_minutes)
+    coverage = 100.0 * observed / elapsed if elapsed else 0.0
+    label = "DEGRADED" if elapsed >= 20 and coverage < 70 else "MONITORING"
+    lines = [
+        "# Intraday paper-trader coverage",
+        "",
+        f"- Session: {now.date().isoformat()} (America/New_York)",
+        f"- Assessment: **{label}**",
+        f"- Last update (ET): {now.isoformat()}",
+        f"- Regular-session minutes elapsed: {elapsed}",
+        f"- Minutes actually evaluated: {observed}",
+        f"- Observed minute coverage: **{coverage:.1f}%**",
+        f"- Archived batches: {recorded_batches}",
+        f"- Simulated fills: {fills}",
+        f"- Batch statuses: {json.dumps(statuses, sort_keys=True)}",
+        "",
+        "Coverage measures whether forward-time checks ran, not trade profitability.",
+        "Zero fills may be legitimate if risk filters reject every candidate.",
+        "Scheduled GitHub Actions can be delayed or dropped; use the dedicated worker for regular checks.",
+        "",
+    ]
+    (DATA / "HEALTH.md").write_text("\n".join(lines), encoding="utf-8")
+
+
 def persist_record(record: dict, state: dict, rules: dict, now: datetime) -> None:
     record_path = DATA / "runs" / now.strftime("%Y-%m-%d/%H%M.json")
     state_path = DATA / "portfolio.json"
@@ -568,25 +672,35 @@ def persist_record(record: dict, state: dict, rules: dict, now: datetime) -> Non
                  "portfolio": portfolio, "trades_this_batch": len(transactions),
                  "record": str(record_path.relative_to(ROOT))})
     positions_text = "\n".join(
-        f"- {s}: {p['qty']} shares, entry \${p['entry_price']:.2f}, last \${state['last_prices'].get(s,p['entry_price']):.2f}"
+        f"- {s}: {p['qty']} shares, entry ${p['entry_price']:.2f}, last ${state['last_prices'].get(s,p['entry_price']):.2f}"
         for s, p in state["positions"].items()) or "- None"
     top_text = "\n".join(
-        f"- {x['symbol']}: \${x['price']:.2f}, change {x['day_change_pct']:+.2f}%, RVOL {x['rvol20']:.2f}, RSI {x['rsi14']:.1f}"
+        f"- {x['symbol']}: ${x['price']:.2f}, change {x['day_change_pct']:+.2f}%, RVOL {x['rvol20']:.2f}, RSI {x['rsi14']:.1f}"
         for x in candidates if x.get("top_five")) or "- None (no usable fresh market data)"
+    diagnostics = record.get("entry_diagnostics", {})
+    rejection_text = "\n".join(
+        f"- {name}: {count}" for name, count in diagnostics.get("failed_check_counts", {}).items()
+    ) or "- None"
     latest = f"""# Latest paper-trading batch
 
 - Time (ET): {now.isoformat()}
 - Status: **{status}**
-- Paper equity: **\${portfolio['equity']:,.2f}**
-- Cash: \${portfolio['cash']:,.2f}
+- Paper equity: **${portfolio['equity']:,.2f}**
+- Cash: ${portfolio['cash']:,.2f}
 - Total return: {portfolio['total_return_pct']:+.3f}%
-- Realized P&L: \${portfolio['realized_pnl']:,.2f}
+- Realized P&L: ${portfolio['realized_pnl']:,.2f}
 - Simulated orders this batch: {len(transactions)}
+- Minute evaluations: {len(record.get('minute_evaluations', []))}
+- Screened top-five evaluations: {diagnostics.get('top_five_evaluations', 0)}
+- First evaluation delayed from 10-minute slot: {record.get('first_evaluation_delay_seconds', 0)} seconds
 - Risk rule version: {rules['version']}
 - Warning: **No real orders. Unofficial/delayed quotes. Backtest-quality, not execution-quality fills.**
 
 ## Top candidates
 {top_text}
+
+## Failed entry checks (counts may overlap)
+{rejection_text}
 
 ## Open positions
 {positions_text}
@@ -594,9 +708,10 @@ def persist_record(record: dict, state: dict, rules: dict, now: datetime) -> Non
 ## Batch note
 {note or "No special note."}
 
-Full run: \`{record_path.relative_to(ROOT)}\`.
+Full run: `{record_path.relative_to(ROOT)}`.
 """
     (DATA / "LATEST.md").write_text(latest, encoding="utf-8")
+    write_health_report(datetime.now(NY))
     print(json.dumps({"status": status, "batch": now.strftime("%Y-%m-%d/%H%M"), "orders": len(transactions),
                       "equity": portfolio["equity"], "errors": errors[:3]}, ensure_ascii=False))
 
@@ -606,8 +721,8 @@ def batch_main():
     # The deadline is hard: do not invent or backfill intraday decisions
     # after 14:00 ET. Future ordinary exchange days remain unchanged.
     bounds = effective_session_bounds(start)
-    if bounds is not None and start >= bounds[1] and start.date() == TODAY_ONLY_STOP_DATE:
-        print("USER_CUTOFF_REACHED: paper trading stopped at 2026-10-19 14:00 ET; no backfill")
+    if start.date() < START_DATE or bounds is None or not (bounds[0] <= start < bounds[1]):
+        print(f"OUTSIDE_MARKET_SESSION: {start.isoformat()}; no archived batch or latest-summary overwrite")
         return
     DATA.mkdir(exist_ok=True)
     bucket_start = start.replace(minute=(start.minute // 10) * 10, second=0, microsecond=0)
@@ -659,22 +774,7 @@ def batch_main():
         time.sleep(max(0, (next_minute - datetime.now(NY)).total_seconds()))
     if not minute_logs:
         raise RuntimeError("No minute checks completed")
-    rec["timestamp_et"] = datetime.now(NY).isoformat()
-    rec["transactions"] = all_transactions
-    rec["minute_evaluations"] = minute_logs
-    rec["evaluation_interval_seconds_target"] = 60
-    rec["archive_interval_minutes"] = 10
-    rec["rules_version"] = rules["version"]
-    rec["turnover_risk"] = minute_logs[-1]["turnover_risk"]
-    rec["rule_updates_during_batch"] = [lesson for event in minute_logs for lesson in event["new_loss_reviews"]]
-    rec["expected_batch_start_et"] = bucket_start.isoformat()
-    if all_transactions:
-        rec["status"] = "EXECUTED"
-    rec["portfolio"]["equity"] = money(equity(state))
-    rec["portfolio"]["cash"] = money(state["cash"])
-    rec["portfolio"]["market_value"] = money(equity(state) - state["cash"])
-    rec["portfolio"]["realized_pnl"] = money(state["realized_pnl"])
-    rec["portfolio"]["total_return_pct"] = round(100 * (equity(state) / SEED - 1), 3)
+    rec = build_batch_record(rec, minute_logs, all_transactions, state, rules, bucket_start)
     persist_record(rec, state, rules, bucket_start)
 
 if __name__ == "__main__":

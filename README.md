@@ -74,7 +74,7 @@ The engine attempts to close positions during the last 10 minutes of the trading
 
 | Path | Contents |
 | --- | --- |
-| [data/LATEST.md](data/LATEST.md) | Most recent batch status / top candidates / holdings |
+| [data/LATEST.md](data/LATEST.md) | Most recent **in-session** batch, rejection statistics and holdings |
 | [data/portfolio.json](data/portfolio.json) | Current simulated cash, positions, realized P&L |
 | [data/rules.json](data/rules.json) | Current adaptive risk settings, version and losses/lessons |
 | [data/transactions.jsonl](data/transactions.jsonl) | Append-only simulated fills, with timestamps, qty, fees, net P&L |
@@ -82,7 +82,34 @@ The engine attempts to close positions during the last 10 minutes of the trading
 | data/runs/YYYY-MM-DD/HHMM.json | Full ten-minute record, including **per-minute** indicators, trades, loss reviews, rule version and final portfolio |
 | [trader.py](trader.py) | Strategy, accounting, rules and persistence |
 | [.github/workflows/paper-trade.yml](.github/workflows/paper-trade.yml) | 10-minute scheduled GitHub Actions job |
-| [tests/test_core.py](tests/test_core.py) | Unit tests, run before any job updates data |
+| [tests/test_core.py](tests/test_core.py) | Risk controls and full mocked BUY→SELL integration tests |
+| [continuous_worker.py](continuous_worker.py) | Continuous minute-level forward worker |
+| [render.yaml](render.yaml) | Optional single-worker Render deployment blueprint |
+| [data/HEALTH.md](data/HEALTH.md) | Observed per-minute coverage (generated after next session batch) |
+
+## Continuous forward worker (recommended)
+
+GitHub's `schedule` trigger is **best effort**: it may arrive late or be dropped. A green Actions check only proves that the job exited successfully; it does **not** prove a one-minute trading cadence or any fills. The fallback workflow remains available until a dedicated worker is actually running.
+
+A long-lived [continuous_worker.py](continuous_worker.py) is provided for regular one-minute forward evaluations during the NYSE session. It never backfills missed market minutes or sends real brokerage orders. It checkpoints each minute and aggregates/publishes 10-minute batches. [data/HEALTH.md](data/HEALTH.md) (generated on the next market batch) reports the observed minute coverage, while [data/LATEST.md](data/LATEST.md) records counts of which entry checks blocked the top-five candidates.
+
+### Render background-worker deployment
+
+The [render.yaml](render.yaml) Blueprint is prepared but **does not deploy itself**. Review the Render worker and persistent-disk charges before activating it:
+
+1. Connect this repo to Render and create a Blueprint from `render.yaml`, using **one instance only**. Set `GITHUB_TOKEN` as a **secret** with fine-grained **Contents: Read and write** access scoped exclusively to this repository. Do not commit the token. The worker's `PAPER_GIT_PUSH=1` is enabled in the Blueprint. You can run locally without uploads using `PAPER_GIT_PUSH=0 python continuous_worker.py`.
+2. Confirm the worker logs show `CONTINUOUS_WORKER_READY`, repeated `MINUTE_EVALUATED` during actual market hours, and `PAPER_BATCH_PUBLISHED` at the end of a ten-minute bucket. Verify commits, data coverage, and the persistent checkpoint mount. This is necessary before claiming the service is live.
+3. **Only after step 2**, set the GitHub repository Actions variable `PAPER_TRADER_EXTERNAL_WORKER=true` under Settings → Secrets and variables → Actions → Variables. This disables scheduled fallback jobs and prevents two engines from trading the same virtual portfolio.
+4. The Blueprint deliberately sets `autoDeployTrigger: off` because the bot commits data frequently; otherwise every batch could redeploy the worker. Manually redeploy after deliberate code changes.
+
+The checkpoint is placed on the mounted persistent disk, separate from Git-tracked `data/`. After a crash the worker can recover an uncommitted batch if the disk remains available. Even so, an internet/data-provider outage may reduce minute coverage. Keep checking the health report and process logs.
+
+### What is and is not fixed
+
+- The test suite now covers a complete synthetic BUY → STOP/SELL path using fresh, mocked candles. It also verifies rejection diagnostics.
+- After-hours GitHub runs no longer overwrite the most recent regular-session `LATEST.md` with `SKIPPED`.
+- The 2025-loss-protection filters remain intact. The engine is allowed to make **zero** trades if no candidate passes all rules. An absence of fills is not proof of scheduler failure.
+- The Yahoo Finance source remains unofficial and may have delayed/missing candles. Paper fills are estimates, not executable prices. A professional data feed is a separate integration.
 
 ## Critical operational limits
 
