@@ -2,13 +2,13 @@
 
 - Session: 2026-10-26 (America/New_York)
 - Assessment: **DEGRADED**
-- Last update (ET): 2026-10-26T15:39:03.821303-04:00
-- Regular-session minutes elapsed: 369
-- Minutes actually evaluated: 9
-- Observed minute coverage: **2.4%**
-- Archived batches: 1
+- Last update (ET): 2026-10-26T15:49:03.659683-04:00
+- Regular-session minutes elapsed: 379
+- Minutes actually evaluated: 14
+- Observed minute coverage: **3.7%**
+- Archived batches: 2
 - Simulated fills: 0
-- Batch statuses: {"NO_TRADE": 1}
+- Batch statuses: {"NO_TRADE": 2}
 
 Coverage measures whether forward-time checks ran, not trade profitability.
 Zero fills may be legitimate if risk filters reject every candidate.
