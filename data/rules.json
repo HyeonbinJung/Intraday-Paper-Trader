@@ -1,17 +1,36 @@
 {
-  "version": 2,
-  "risk_per_trade": 0.007,
+  "version": 3,
+  "risk_per_trade": 0.00651,
   "max_position_pct": 0.2,
   "max_gross_exposure": 0.55,
   "max_positions": 3,
-  "rvol_min": 1.3,
+  "rvol_min": 1.35,
   "max_daily_drawdown": 0.025,
   "max_daily_losses": 3,
   "stop_atr": 1.5,
   "target_atr": 2.7,
-  "cooldown_minutes": 30,
+  "cooldown_minutes": 35,
   "min_price": 5,
-  "lessons": [],
+  "lessons": [
+    {
+      "time_et": "2026-10-27T15:17:02.000148-04:00",
+      "symbol": "HWKN",
+      "net_pnl": -12.35,
+      "exit_reason": "STOP",
+      "loss_category": "STOP",
+      "gross_reference_pnl": -9.07,
+      "roundtrip_estimated_cost": 3.28,
+      "hypothesis_not_proven_cause": "ATR stop crossed: volatility/trend reversal",
+      "rules_changed_immediately": [
+        "risk_per_trade 0.00700 -> 0.00651",
+        "rvol_min 1.30 -> 1.35",
+        "cooldown_minutes 30 -> 35"
+      ],
+      "applies_from_next_minute": true,
+      "github_archive": "next 10-minute commit",
+      "rules_version": 3
+    }
+  ],
   "min_holding_minutes": 10,
   "min_reentry_minutes": 30,
   "max_entries_per_day": 4,
