@@ -1,11 +1,11 @@
 # Intraday paper-trader coverage
 
-- Session: 2026-11-04 (America/New_York)
+- Session: 2026-11-06 (America/New_York)
 - Assessment: **DEGRADED**
-- Last update (ET): 2026-11-04T15:59:03.616040-05:00
-- Regular-session minutes elapsed: 389
-- Minutes actually evaluated: 6
-- Observed minute coverage: **1.5%**
+- Last update (ET): 2026-11-06T15:39:04.153734-05:00
+- Regular-session minutes elapsed: 369
+- Minutes actually evaluated: 9
+- Observed minute coverage: **2.4%**
 - Archived batches: 1
 - Simulated fills: 0
 - Batch statuses: {"NO_TRADE": 1}
